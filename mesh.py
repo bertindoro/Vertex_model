@@ -295,7 +295,7 @@ class Mesh:
             options={"disp": False}  # Display optimization details
         )
 
-        print(f"Optimization success: {result.success}, Message: {result.message}")
+        #print(f"Optimization success: {result.success}, Message: {result.message}")
 
         # Update vertex positions with optimized results
         optimized_positions = result.x
@@ -376,7 +376,7 @@ class Mesh:
 
             # Check the mean force value
             mean_force = self.mean_force[-1]
-            print(f"Current mean force: {mean_force}")
+            #print(f"Current mean force: {mean_force}")
 
             # Determine the next threshold
             for i, threshold in enumerate(thresholds):

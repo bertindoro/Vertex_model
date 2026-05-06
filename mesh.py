@@ -127,7 +127,7 @@ class Mesh:
         # Additional updates
         self.update_cell_AP()
         self.update_edge_length()
-        #self.check_T1()
+        self.check_T1()
         self.mean_force.append(force_mean)
         self.total_force.append(sum(force_magnitude)) 
         self.compute_energy() 

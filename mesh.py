@@ -1,5 +1,6 @@
 import numpy as np
 from cell_edge_vertex import *
+from additional_functions import *
 from shapely.geometry import Polygon
 import matplotlib.pyplot as plt
 import os
@@ -11,7 +12,7 @@ import matplotlib.cm as cm
 
 
 class Mesh:
-    def __init__(self, num_cells, dt=0.01, S = 1, L0 = 1, mode = "hexagon", alpha = 1, beta = 1, gamma = 0, cut=True, grad_S=False, grad_L0=False, grad_mode="center", theta=90, side_length=1):
+    def __init__(self, num_cells, dt=0.01, S = 1, L0 = 1, mode = "hexagon", alpha = 1, beta = 1, gamma = 0, cut=True, grad_S=False, grad_L0=False, grad_mode="center", theta=90, side_length=1, T1_thr = 1e-2):
         """
         Initialize the mesh with parameters
         
@@ -28,6 +29,7 @@ class Mesh:
         - grad_mode: mode of gradient computation ("center", "boundary", "dome", "cone")
         - theta: target opening angle for "cone"
         - side_length
+        - T1_thr: arbitrary threshold for T1 transitions
         """
         self.num_cells = num_cells
         self.dt = dt
@@ -61,6 +63,7 @@ class Mesh:
         self.grad_L0 = grad_L0
         self.grad_mode = grad_mode
         self.theta = theta
+        self.T1_thr = T1_thr
         self.right_side_vertex_ids = None
         self.fix_vertex_xy = []
         self.fix_vertex_x = []
@@ -124,6 +127,7 @@ class Mesh:
         # Additional updates
         self.update_cell_AP()
         self.update_edge_length()
+        self.check_T1()
         self.mean_force.append(force_mean)
         self.total_force.append(sum(force_magnitude)) 
         self.compute_energy() 
@@ -432,12 +436,29 @@ class Mesh:
                 vertices_by_id[vertex_id] = vertex
             return vertices[pos_tuple]
 
-        def add_edge(vertex_ids):
+        def add_edge_old(vertex_ids):
             edge_key = tuple(sorted(vertex_ids))
             if edge_key not in self.edges:
                 edge_id = len(self.edges) + 1
                 self.edges[edge_key] = Edge(id=edge_id, vertex_ids=vertex_ids)
             return self.edges[edge_key]
+        
+        def add_edge(vertex_ids):
+            edge_key = tuple(sorted(vertex_ids))
+
+            # si l'arête existe déjà (on la cherche par ses vertices)
+            for edge in self.edges.values():
+                if tuple(sorted(edge.vertex_ids)) == edge_key:
+                    return edge
+
+            # sinon création
+            edge_id = len(self.edges) + 1
+            edge = Edge(id=edge_id, vertex_ids=vertex_ids)
+
+            # IMPORTANT : clé = edge.id (PAS edge_key)
+            self.edges[edge_id] = edge
+
+            return edge
 
         centers = [(0.0, 0.0)]
         visited = set(tuple(np.round(center, decimals=6)) for center in centers)
@@ -567,8 +588,8 @@ class Mesh:
         self.rotate_vertices()
     
 
-    def plot(self, boundary_circle=True, cells=True, cells_id=False, edges=False, vertices=False, 
-             right_vertices=False, boundary_points=False, fixed_vertices = False):
+    def plot(self, boundary_circle=True, cells=True, cells_id=False, edges=False, edges_id=False,
+         vertices=False, right_vertices=False, boundary_points=False, fixed_vertices=False):
         """
         Plot the mesh with some options. Default display the boundary circle and the cells
         
@@ -609,16 +630,17 @@ class Mesh:
                         ha='center', va='center')
             
         # Edges
-        if edges:
-            for edge in self.edges.values():
-                if len(edge.cell_ids)==1:
-                    # Get the positions of the vertices for this edge
-                    v1, v2 = edge.vertex_ids
-                    pos1 = self.vertices[v1].position
-                    pos2 = self.vertices[v2].position
-
-                    # Draw the edge as a line
-                    plt.plot([pos1[0], pos2[0]], [pos1[1], pos2[1]], 'g-')
+        for edge in self.edges.values():
+            v1, v2 = edge.vertex_ids
+            pos1 = self.vertices[v1].position
+            pos2 = self.vertices[v2].position
+            if edges and not edges_id:
+                plt.plot([pos1[0], pos2[0]], [pos1[1], pos2[1]], 'g-')
+            if edges_id:
+                mid = 0.5 * (pos1 + pos2)
+                plt.text(mid[0], mid[1], str(edge.id),
+                        color='green', fontsize=10,
+                        ha='center', va='center')
 
 
         # Vertices
@@ -1191,6 +1213,7 @@ class Mesh:
             if not vertex.cell_ids:
                 del self.vertices[vid]
 
+
         #print(f"Cells {cell_ids} removed")
 
 
@@ -1651,14 +1674,22 @@ class Mesh:
                 vertices_by_id[vid] = v
             return vertices[key]
 
-        def add_edge(vids, cid=None):
-            ek = tuple(sorted(vids))
-            if ek not in self.edges:
-                eid = len(self.edges) + 1
-                self.edges[ek] = Edge(id=eid, vertex_ids=ek)
-            if cid and cid not in self.edges[ek].cell_ids:
-                self.edges[ek].add_cell_id(cid)
-            return self.edges[ek]
+        def add_edge(vertex_ids):
+            edge_key = tuple(sorted(vertex_ids))
+
+            # si l'arête existe déjà (on la cherche par ses vertices)
+            for edge in self.edges.values():
+                if tuple(sorted(edge.vertex_ids)) == edge_key:
+                    return edge
+
+            # sinon création
+            edge_id = len(self.edges) + 1
+            edge = Edge(id=edge_id, vertex_ids=vertex_ids)
+
+            # IMPORTANT : clé = edge.id (PAS edge_key)
+            self.edges[edge_id] = edge
+
+            return edge
 
         # 4) Build mesh
         for simplex in delaunay.simplices:
@@ -1778,14 +1809,22 @@ class Mesh:
                 vertices_by_id[vertex_id] = vertex
             return vertices[pos_tuple]
 
-        def add_edge(vertex_ids, cell_id=None):
+        def add_edge(vertex_ids):
             edge_key = tuple(sorted(vertex_ids))
-            if edge_key not in self.edges:
-                edge_id = len(self.edges) + 1
-                self.edges[edge_key] = Edge(id=edge_id, vertex_ids=edge_key)
-            if cell_id is not None and cell_id not in self.edges[edge_key].cell_ids:
-                self.edges[edge_key].add_cell_id(cell_id)
-            return self.edges[edge_key]
+
+            # si l'arête existe déjà (on la cherche par ses vertices)
+            for edge in self.edges.values():
+                if tuple(sorted(edge.vertex_ids)) == edge_key:
+                    return edge
+
+            # sinon création
+            edge_id = len(self.edges) + 1
+            edge = Edge(id=edge_id, vertex_ids=vertex_ids)
+
+            # IMPORTANT : clé = edge.id (PAS edge_key)
+            self.edges[edge_id] = edge
+
+            return edge
 
         # Add vertices from points
         for point in points:
@@ -1862,12 +1901,22 @@ class Mesh:
                 vertices_by_id[vertex_id] = vertex
             return vertices[pos_tuple]
 
-        def add_edge(v1_id, v2_id):
-            edge_key = tuple(sorted((v1_id, v2_id)))
-            if edge_key not in self.edges:
-                edge_id = len(self.edges) + 1
-                self.edges[edge_key] = Edge(id=edge_id, vertex_ids=edge_key)
-            return self.edges[edge_key]
+        def add_edge(vertex_ids):
+            edge_key = tuple(sorted(vertex_ids))
+
+            # si l'arête existe déjà (on la cherche par ses vertices)
+            for edge in self.edges.values():
+                if tuple(sorted(edge.vertex_ids)) == edge_key:
+                    return edge
+
+            # sinon création
+            edge_id = len(self.edges) + 1
+            edge = Edge(id=edge_id, vertex_ids=vertex_ids)
+
+            # IMPORTANT : clé = edge.id (PAS edge_key)
+            self.edges[edge_id] = edge
+
+            return edge
 
         # Calculate the heights and positions
         H = (L0_init / 2) / np.cos(np.pi / 6)
@@ -2303,4 +2352,211 @@ class Mesh:
 
         # Round to an appropriate precision
         return round(opening_angle, 6)
+
+
+
+
+
+
+    def check_T1(self):
+        """
+        Check the length of each edge and perform T1 if needed
+        """
+        for edge in self.edges.values():
+            if edge.L < self.T1_thr:
+                self.T1_transition(edge_id=edge.id)
+
+
+    def T1_transition(self, edge_id):
+        """
+        Perform a T1 transition 
+
+        Process:
+        - identifies the edge to be flipped
+        - finds the surrounding cells
+        - rotates the edge vertices by 90 degrees (anticlockwise direction)
+        - updates local cell connectivity
+        - rebuilds the global edge list to ensure consistency
+
+        Parameters:
+        - edge_id: id of the edge undergoing the T1 transition
+        """
+
+        Medge = self.edges[edge_id]
+        if len(Medge.vertex_ids) != 2:
+            return
+
+        # Identifier les vertices
+        v1_id, v2_id = Medge.vertex_ids
+        v1 = self.vertices[v1_id]
+        v2 = self.vertices[v2_id]
+
+        # Identifier les cellules
+        list_cid = np.unique(np.concatenate((v1.cell_ids, v2.cell_ids)))
+        nb_cells = len(list_cid)
+
+        c1_id = next((x for x in v1.cell_ids if x not in v2.cell_ids), None)
+        c2_id = next((x for x in v2.cell_ids if x not in v1.cell_ids), None)
+
+        c1 = self.cells[c1_id] if c1_id is not None else None
+        c2 = self.cells[c2_id] if c2_id is not None else None
+
+        remaining = [x for x in list_cid if x not in (c1_id, c2_id)]
+        c3_id = remaining[0] if len(remaining) > 0 else None
+        c4_id = remaining[1] if len(remaining) > 1 else None
+
+        c3 = self.cells[c3_id] if c3_id is not None else None
+        c4 = self.cells[c4_id] if c4_id is not None else None
+
+        if nb_cells >= 3:
+            centers = []
+            for c in [c1, c2, c3, c4]:
+                if c is not None:
+                    centers.append(c.center_of_cell(self.vertices))
+
+            if not is_anticlockwise(centers):
+                c3_id, c4_id = c4_id, c3_id
+                c3, c4 = c4, c3
+
+            # Rotation à 90 degrés sens anti horaire
+            center_edge = (v1.position + v2.position) / 2
+            theta = np.pi / 2
+
+            R = np.array([
+                [np.cos(theta), -np.sin(theta)],
+                [np.sin(theta),  np.cos(theta)]
+            ])
+
+            v1.position = center_edge + R @ (v1.position - center_edge)
+            v2.position = center_edge + R @ (v2.position - center_edge)
+
+
+            # Mise a jour topologie
+            # c1 : ajouter v2 après v1
+            if c1 is not None and v1_id in c1.vertex_ids:
+                i = c1.vertex_ids.index(v1_id)
+                c1.vertex_ids.insert(i + 1, v2_id)
+
+            # c2 : ajouter v1 après v2
+            if c2 is not None and v2_id in c2.vertex_ids:
+                i = c2.vertex_ids.index(v2_id)
+                c2.vertex_ids.insert(i + 1, v1_id)
+
+            # c3 : retirer v2
+            if c3 is not None and v2_id in c3.vertex_ids:
+                c3.vertex_ids.remove(v2_id)
+
+            # c4 : retirer v1
+            if c4 is not None and v1_id in c4.vertex_ids:
+                c4.vertex_ids.remove(v1_id)
+
+            # v1 : supprimer c4_id et ajouter c2_id 
+            if c4_id is not None:
+                v1.cell_ids = [x for x in v1.cell_ids if x != c4_id]
+            if c2_id is not None:
+                if c2_id not in v1.cell_ids:
+                    v1.cell_ids.append(c2_id)
+
+            # v2 : supprimer c3_id et ajouter c1_id
+            if c3_id is not None:
+                v2.cell_ids = [x for x in v2.cell_ids if x != c3_id]
+            if c1_id is not None:
+                if c1_id not in v2.cell_ids:
+                    v2.cell_ids.append(c1_id)
+        
+        else:
+            print(f" Cas {nb_cells} non géré pour une T1 ")
+            return
+
+        # Autres updates
+        self.clean_T1_edges(v1_id, v2_id, c1_id, c2_id, c3_id, c4_id)
+        
+        # Mise à jour locale des voisins et du statut de bordure
+        #for cid in (c1_id, c2_id, c3_id, c4_id):
+            #self.cells[cid].update_neighbors_and_boundary(self.edges)
+
+        self.update_cell_AP()
+        self.update_edge_length()
+
+        self.update_cell_AP()
+        self.update_edge_length()
+        
+
+    def clean_T1_edges(self, v1_id, v2_id, c1_id, c2_id, c3_id, c4_id):
+        """
+        Remove the 4 old edges, and create the 4 new ones
+        """
+
+        # 1. Mise à jour de l'arête (v1, v2)
+        v1v2_edge = None
+        for eid, edge in self.edges.items():
+            if set(edge.vertex_ids) == {v1_id, v2_id}:
+                v1v2_edge = edge
+                break
+
+        if v1v2_edge is None:
+            raise ValueError("L'arête v1-v2 est introuvable.")
+
+        # L'arête v1-v2 devient partagée uniquement par c1 et c2
+        v1v2_edge.cell_ids = [c1_id, c2_id]
+
+        # 2. Supprimer toutes les autres arêtes incidentes à v1 ou v2
+        edges_to_remove = []
+        for eid, edge in self.edges.items():
+            if edge.id == v1v2_edge.id:
+                continue
+            if v1_id in edge.vertex_ids or v2_id in edge.vertex_ids:
+                edges_to_remove.append(eid)
+
+        for eid in edges_to_remove:
+            del self.edges[eid]
+
+        # 3. Récupérer les voisins dans les nouvelles listes de c3 et c4
+        c3_verts = self.cells[c3_id].vertex_ids
+        c4_verts = self.cells[c4_id].vertex_ids
+
+        def get_neighbors(cell_list, vid):
+            n = len(cell_list)
+            idx = cell_list.index(vid)
+            prev = cell_list[(idx - 1) % n]
+            nxt = cell_list[(idx + 1) % n]
+            return prev, nxt
+
+        prev_v1, next_v1 = get_neighbors(c3_verts, v1_id)
+        prev_v2, next_v2 = get_neighbors(c4_verts, v2_id)
+
+        # 4. Créer les nouvelles arêtes
+        #    Générer le prochain id disponible
+        next_id = max(self.edges.keys(), default=-1) + 1
+
+        #    Fonction utilitaire : retourne les cellules qui contiennent deux sommets
+        def cells_containing(a, b):
+            return [cid for cid, cell in self.cells.items()
+                    if a in cell.vertex_ids and b in cell.vertex_ids]
+
+        new_edges = []
+        # Pour v1
+        for neighbor in (prev_v1, next_v1):
+            e = Edge(next_id, (v1_id, neighbor))
+            e.cell_ids = cells_containing(v1_id, neighbor)
+            new_edges.append(e)
+            next_id += 1
+
+        # Pour v2
+        for neighbor in (prev_v2, next_v2):
+            e = Edge(next_id, (v2_id, neighbor))
+            e.cell_ids = cells_containing(v2_id, neighbor)
+            new_edges.append(e)
+            next_id += 1
+
+        # 5. Ajouter les nouvelles arêtes au dictionnaire
+        for e in new_edges:
+            self.edges[e.id] = e
+
+        # 6. Recalculer les longueurs
+        for edge in self.edges.values():
+            p1 = self.vertices[edge.vertex_ids[0]].position
+            p2 = self.vertices[edge.vertex_ids[1]].position
+            edge.L = np.linalg.norm(p1 - p2)
+
 

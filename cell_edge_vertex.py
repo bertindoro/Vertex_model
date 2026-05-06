@@ -92,6 +92,7 @@ class Cell:
             vertex.add_cell_id(self.id)
         self.vertex_ids = self.anticlockwise(vertex_ids, {v.id: v for v in vertices})
         self.is_boundary = False
+        self.S0 = S0
         if A0 is None:
             if mode == "circle":
                 self.A0 = np.pi *L0**2    # circle
@@ -305,15 +306,19 @@ class Cell:
         Returns:
         - perimeter gradient vector of with respect to vertex position
         """
-        cst = 2*self.beta*len(self.vertex_ids)*(self.P - self.P0)/self.P
         positions = np.array([vertices[v_id].position for v_id in self.vertex_ids])
         n = len(positions)
+
+        sum_inv_perim = np.sum(1 / np.linalg.norm(positions[i] - positions[(i+1) % n]) for i in range(n))
+        cst = 2*self.beta*len(self.vertex_ids)*(self.P - self.P0)/sum_inv_perim
+        
         v_index = self.vertex_ids.index(vertex_id)
         prev_idx = (v_index - 1) % n
         next_idx = (v_index + 1) % n
 
         grad_x = 2*positions[v_index][0] - positions[prev_idx][0] - positions[next_idx][0]
         grad_y = 2*positions[v_index][1] - positions[prev_idx][1] - positions[next_idx][1]
+
 
         return np.array([grad_x*cst, grad_y*cst])
 
@@ -366,4 +371,72 @@ class Cell:
 
 
 
+    def center_of_cell(self, vertices):
+        """
+        Compute the position of the center of the cell using the centroid method.
+        
+        Args:
+            vertices: List of vertex objects with position attribute
+            
+        Returns:
+            (cx, cy): Coordinates of the cell center
+        """
+        positions = np.array([vertices[v_id].position for v_id in self.vertex_ids])
+        n = len(positions)
+        
+        if n < 3:
+            raise ValueError("A cell must have at least 3 vertices")
+        
+        # Initialize variables
+        area = 0.0
+        cx = 0.0
+        cy = 0.0
+        
+        # Calculate area and centroid coordinates
+        for i in range(n):
+            j = (i + 1) % n
+            cross = positions[i][0] * positions[j][1] - positions[j][0] * positions[i][1]
+            area += cross
+            cx += (positions[i][0] + positions[j][0]) * cross
+            cy += (positions[i][1] + positions[j][1]) * cross
+        
+        # Finalize calculations
+        area *= 0.5
+        
+        if area == 0:
+            # Degenerate polygon, return average of vertices
+            return np.mean(positions, axis=0)
+        
+        cx /= (6 * area)
+        cy /= (6 * area)
+        
+        return np.array([cx, cy])
+    
 
+
+    def update_neighbors_and_boundary(self, edges):
+        """
+        Update the value of num_neighbors and is_boundary based on the edges
+
+        Args:
+            edges : dict {edge_id: Edge}
+        """
+        neighbors = set()
+        on_boundary = False
+
+        for edge in edges.values():
+            if self.id not in edge.cell_ids:
+                continue
+
+            # Quelles sont les autres cellules sur cette arête ?
+            other_cells = [cid for cid in edge.cell_ids if cid != self.id]
+
+            if len(other_cells) == 1:
+                # Arête interne → l'autre cellule est une voisine
+                neighbors.add(other_cells[0])
+            elif len(other_cells) == 0:
+                # Arête qui n'appartient qu'à cette cellule → frontière
+                on_boundary = True
+
+        self.num_neighbors = len(neighbors)
+        self.is_boundary = on_boundary

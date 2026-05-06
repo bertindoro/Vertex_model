@@ -449,3 +449,38 @@ def do_cone(num_cells = 500, cut = True, theta = 90, mode = "triangle", folder_n
 
 
 
+
+
+
+def is_anticlockwise(points):
+    """
+    Vérifie si une liste de points est dans l'ordre anti-horaire.
+    
+    Args:
+        points: Liste de tuples (x, y) ou tableau numpy de forme (n, 2)
+        
+    Returns:
+        True si les points sont dans l'ordre anti-horaire, False sinon
+    """
+    # Convertir en tableau numpy si nécessaire
+    if not isinstance(points, np.ndarray):
+        points = np.array(points)
+    
+    n = len(points)
+    if n < 3:
+        # Un polygone valide doit avoir au moins 3 points
+        # Pour moins de 3 points, on considère que l'ordre n'est pas défini
+        return False
+    
+    # Calcul de l'aire signée (formule du shoelace)
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += points[i][0] * points[j][1] - points[j][0] * points[i][1]
+    
+    # Si l'aire est positive -> ordre anti-horaire
+    # Si l'aire est négative -> ordre horaire
+    return area > 0
+
+
+

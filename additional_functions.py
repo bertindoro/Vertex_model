@@ -484,3 +484,10 @@ def is_anticlockwise(points):
 
 
 
+def regular_polygon_shape_factor(n):
+    """
+    Retourne un S_0 en fonction du nombre de sommets
+    """
+    if n < 3:
+        return 2 * np.sqrt(np.pi)   # cas circulaire
+    return np.sqrt(4 * n * np.tan(np.pi / n))

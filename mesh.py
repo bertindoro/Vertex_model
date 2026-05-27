@@ -10,6 +10,9 @@ from scipy.spatial import Delaunay
 from matplotlib.colors import Normalize
 import matplotlib.cm as cm
 
+from scipy.spatial import Voronoi
+
+
 
 class Mesh:
     def __init__(self, num_cells, dt=0.01, S = 1, L0 = 1, mode = "hexagon", alpha = 1, beta = 1, gamma = 0, cut=True, grad_S=False, grad_L0=False, grad_mode="center", theta=90, side_length=1, T1_thr = 1e-2):
@@ -30,6 +33,7 @@ class Mesh:
         - theta: target opening angle for "cone"
         - side_length
         - T1_thr: arbitrary threshold for T1 transitions
+        - seed: to have a
         """
         self.num_cells = num_cells
         self.dt = dt
@@ -127,7 +131,7 @@ class Mesh:
         # Additional updates
         self.update_cell_AP()
         self.update_edge_length()
-        self.check_T1()
+        #self.check_T1()
         self.mean_force.append(force_mean)
         self.total_force.append(sum(force_magnitude)) 
         self.compute_energy() 
@@ -249,8 +253,6 @@ class Mesh:
                 vertex_index = list(self.vertices.keys()).index(vertex_id)
                 forces[2 * vertex_index:2 * vertex_index + 2] = total_force
 
-
-
             return forces.flatten()
 
         def compute_energy(positions):
@@ -338,6 +340,8 @@ class Mesh:
             self.three_triangles(side_length=side_length)
         elif self.mode=="triangle":
             self.generate_triangles(side_length=side_length)
+        elif self.mode=="voronoi":
+            self.generate_voronoi(side_length=side_length)
         else:
             if self.mode != "circle":
                 self.mode = "hexagon"
@@ -380,7 +384,7 @@ class Mesh:
 
             # Check the mean force value
             mean_force = self.mean_force[-1]
-            #print(f"Current mean force: {mean_force}")
+            print(f"Current mean force: {mean_force}, target: {thresholds[-1]}")
 
             # Determine the next threshold
             for i, threshold in enumerate(thresholds):
@@ -1212,6 +1216,7 @@ class Mesh:
             # If no cells reference this vertex any more, delete it
             if not vertex.cell_ids:
                 del self.vertices[vid]
+        self.num_cells = len(self.cells)      
 
 
         #print(f"Cells {cell_ids} removed")
@@ -2558,5 +2563,473 @@ class Mesh:
             p1 = self.vertices[edge.vertex_ids[0]].position
             p2 = self.vertices[edge.vertex_ids[1]].position
             edge.L = np.linalg.norm(p1 - p2)
+
+
+
+
+
+
+    ### relaxation_steps pour uniformiser la taille des cellules
+    ## seed et clip_to_circle à passer en paramètre
+    def generate_voronoi(self, side_length=1, A0=None, P0=None, generator_factor=3, relaxation_steps=10, seed=None, clip_to_circle=True):
+        """
+        Génére un maillage de Voronoï circulaire avec exactement num_cells cellules.
+        Si relaxation_steps > 0, applique une relaxation de Lloyd pour uniformiser
+        la taille des cellules.
+        """
+        if seed is not None:
+            np.random.seed(seed)
+
+        # --- Cibles identiques au mode "circle" ---
+        if A0 is None:
+            A0_cell = np.pi * side_length**2
+        else:
+            A0_cell = A0
+
+        S0_circle = 2.0 * np.sqrt(np.pi)
+        S0_cell = self.S_end * S0_circle
+
+        if P0 is None:
+            P0_cell = S0_cell * np.sqrt(A0_cell)
+        else:
+            P0_cell = P0
+
+        total_area_target = self.num_cells * A0_cell
+        R_target = np.sqrt(total_area_target / np.pi)
+
+        # --- Génération initiale des points dans un grand disque ---
+        n_generated = int(self.num_cells * generator_factor)
+        R_gen = R_target * 1.5
+
+        inner_points = []
+        attempts = 0
+        while len(inner_points) < n_generated and attempts < n_generated * 10:
+            pt = np.random.uniform(-R_gen, R_gen, 2)
+            if np.linalg.norm(pt) <= R_gen:
+                inner_points.append(pt)
+            attempts += 1
+        inner_points = np.array(inner_points[:n_generated])
+        n_generated = len(inner_points)
+
+        if self.cut:
+            mask = (np.abs(inner_points[:, 0]) > 0.1) | (inner_points[:, 1] > 0.1)
+            inner_points = inner_points[mask]
+            n_generated = len(inner_points)
+
+        # --- Points fantômes très éloignés (fixes) ---
+        n_boundary = max(200, n_generated // 2)
+        theta = np.linspace(0, 2 * np.pi, n_boundary, endpoint=False)
+        R_ghost = R_gen * 2.5
+        boundary_points = np.column_stack([R_ghost * np.cos(theta),
+                                        R_ghost * np.sin(theta)])
+
+        # --- Relaxation de Lloyd ---
+        for step in range(relaxation_steps):
+            # Diagramme temporaire (intérieur + fantômes)
+            all_pts = np.vstack([inner_points, boundary_points])
+            vor = Voronoi(all_pts)
+
+            # Calcul des centroïdes pour chaque point intérieur
+            new_inner = np.zeros_like(inner_points)
+            for i, idx_inner in enumerate(range(len(inner_points))):
+                region = vor.regions[vor.point_region[idx_inner]]
+                if -1 in region:
+                    # région non bornée (ne devrait pas arriver)
+                    new_inner[i] = inner_points[i]
+                else:
+                    vertices = vor.vertices[region]
+                    new_inner[i] = vertices.mean(axis=0)
+            inner_points = new_inner
+            # On ne modifie pas les points fantômes
+
+        # --- Construction définitive du Voronoï ---
+        all_points = np.vstack([inner_points, boundary_points])
+        vor = Voronoi(all_points)
+
+        # --- Sommets ---
+        self.vertices = {}
+        vertex_map = {}
+        for v_idx, pos in enumerate(vor.vertices):
+            v = Vertex(id=v_idx + 1, position=pos)
+            self.vertices[v.id] = v
+            vertex_map[v_idx] = v
+
+        # --- Arêtes et cellules temporaires ---
+        self.edges = {}
+        temp_cells = {}
+        inner_indices = list(range(len(inner_points)))
+        ridge_owner = {}
+
+        def _add_edge(vert_ids):
+            sorted_ids = tuple(sorted(vert_ids))
+            for edge in self.edges.values():
+                if tuple(sorted(edge.vertex_ids)) == sorted_ids:
+                    return edge
+            edge_id = len(self.edges) + 1
+            edge = Edge(id=edge_id, vertex_ids=vert_ids)
+            self.edges[edge_id] = edge
+            return edge
+
+        for (p1, p2), (v1, v2) in zip(vor.ridge_points, vor.ridge_vertices):
+            if v1 == -1 or v2 == -1:
+                continue
+            owner1 = p1 if p1 in inner_indices else None
+            owner2 = p2 if p2 in inner_indices else None
+            cell_id1 = (inner_indices.index(owner1) + 1) if owner1 is not None else None
+            cell_id2 = (inner_indices.index(owner2) + 1) if owner2 is not None else None
+            vert_ids = [vertex_map[v1].id, vertex_map[v2].id]
+            edge = _add_edge(vert_ids)
+            if cell_id1 is not None:
+                edge.add_cell_id(cell_id1)
+            if cell_id2 is not None:
+                edge.add_cell_id(cell_id2)
+            ridge_owner[tuple(sorted(vert_ids))] = (cell_id1, cell_id2)
+
+        # Construire les cellules
+        for idx_inner in inner_indices:
+            cell_id = inner_indices.index(idx_inner) + 1
+            region = vor.regions[vor.point_region[idx_inner]]
+            if -1 in region:
+                continue
+            cell_vertices = [vertex_map[v_idx] for v_idx in region]
+
+            num_neighbors = 0
+            for (v1, v2), (c1, c2) in ridge_owner.items():
+                if c1 == cell_id and c2 is not None:
+                    num_neighbors += 1
+                elif c2 == cell_id and c1 is not None:
+                    num_neighbors += 1
+
+            temp_cells[cell_id] = {
+                'vertices': cell_vertices,
+                'num_neighbors': num_neighbors,
+                'min_dist': self.min_distance_to_origin(cell_vertices)
+            }
+
+        # --- Sélection des cellules qui intersectent le disque de rayon R_sel ---
+        sorted_cells = sorted(temp_cells.items(), key=lambda item: item[1]['min_dist'])
+
+        if len(sorted_cells) < self.num_cells:
+            raise RuntimeError(
+                f"Pas assez de cellules générées ({len(sorted_cells)}) pour "
+                f"atteindre num_cells = {self.num_cells}. "
+                f"Augmentez generator_factor (actuel = {generator_factor})."
+            )
+
+        R_sel = sorted_cells[self.num_cells - 1][1]['min_dist']
+        kept = [item for item in sorted_cells if item[1]['min_dist'] <= R_sel]
+
+        if len(kept) > self.num_cells:
+            border = [item for item in kept if item[1]['min_dist'] == R_sel]
+            rng = np.random.default_rng(seed)
+            to_remove = rng.choice(border, size=len(kept) - self.num_cells, replace=False)
+            kept = [item for item in kept if item not in to_remove]
+
+        kept_ids = [cell_id for cell_id, _ in kept]
+
+        # --- Création des Cell finales ---
+        self.cells = {}
+        for cell_id in kept_ids:
+            info = temp_cells[cell_id]
+            dist_centroid = np.linalg.norm(
+                np.mean([v.position for v in info['vertices']], axis=0)
+            )
+            if self.grad_mode in ("center", "dome", "cone"):
+                relative_position = 1 - min(1, dist_centroid / R_sel)
+            else:
+                relative_position = 1 - (dist_centroid / R_sel) if R_sel > 0 else 0.0
+
+            cell = Cell(
+                id=cell_id,
+                vertices=info['vertices'],
+                num_neigh=info['num_neighbors'],
+                relative_position=relative_position,
+                L0=side_length,
+                alpha=self.alpha,
+                beta=self.beta,
+                gamma=self.gamma,
+                S0=S0_cell,
+                A0=A0_cell,
+                P0=P0_cell,
+                mode=self.mode
+            )
+            self.cells[cell_id] = cell
+            for v in info['vertices']:
+                v.add_cell_id(cell_id)
+
+        # --- Ménage ---
+        edges_to_remove = [eid for eid, edge in self.edges.items()
+                        if not any(cid in self.cells for cid in edge.cell_ids)]
+        for eid in edges_to_remove:
+            del self.edges[eid]
+
+        vertices_to_remove = [vid for vid, v in self.vertices.items() if not v.cell_ids]
+        for vid in vertices_to_remove:
+            del self.vertices[vid]
+
+        # --- Mise à l'échelle ---
+        scale = R_target / R_sel
+        for v in self.vertices.values():
+            v.position *= scale
+
+        # --- Finalisation ---
+        self.radius = R_target
+        self.update_cell_AP()
+        self.update_edge_length()
+        self.compute_energy()
+        self.update_cell_SL(self.S_end, self.L0_end)
+        self.get_boundary_vertex_ids()
+
+        if self.cut:
+            tol = side_length / 1.5
+            self.right_side_vertex_ids = []
+            for vid, v in self.vertices.items():
+                x, y = v.position
+                if 0 < x < tol and y <= tol and y >= -self.radius - tol:
+                    self.right_side_vertex_ids.append(vid)
+
+
+        if clip_to_circle:
+            min_area = 0.05 * A0_cell   # 5% de l'aire d'une cellule cible
+            self.clip_boundary_cells_to_circle(self.radius, min_area=min_area)          
+
+        self.rotate_vertices()
+
+
+
+    ## tol la tolérance de dépassement du cercle, min_area: les cellules don't l'aire est plus petite que ça seront tuées (0.0 => aucune tuée)
+    def clip_boundary_cells_to_circle(self, radius, tol=1e-9, min_area=0.0):
+        """
+        Découpe les cellules dépassant du cercle en gardant la partie intérieure.
+        Réordonne les sommets, nettoie les IDs de cellules orphelins dans les sommets,
+        puis supprime les cellules trop petites via kill_cells.
+        """
+        def get_or_create_vertex(pos):
+            for v in self.vertices.values():
+                if np.allclose(v.position, pos, atol=1e-9):
+                    return v
+            new_id = max(self.vertices.keys(), default=0) + 1
+            v = Vertex(id=new_id, position=pos)
+            self.vertices[new_id] = v
+            return v
+
+        new_cells = {}
+        for cid, cell in self.cells.items():
+            verts = [self.vertices[vid] for vid in cell.vertex_ids]
+            n = len(verts)
+            inside = [np.linalg.norm(v.position) <= radius + tol for v in verts]
+
+            if all(inside):
+                new_cells[cid] = cell
+                continue
+
+            # Reconstruction du contour intérieur
+            new_positions = []
+            for i in range(n):
+                A_pos = verts[i].position
+                B_pos = verts[(i + 1) % n].position
+                A_in = inside[i]
+                B_in = inside[(i + 1) % n]
+
+                if A_in:
+                    if not new_positions or not np.allclose(new_positions[-1], A_pos, atol=1e-9):
+                        new_positions.append(A_pos)
+                if A_in != B_in:
+                    pts = self._intersect_segment_circle(A_pos, B_pos, radius)
+                    if pts:
+                        pt = pts[0]
+                        if not new_positions or not np.allclose(new_positions[-1], pt, atol=1e-9):
+                            new_positions.append(pt)
+
+            # Fermeture éventuelle
+            if len(new_positions) >= 2 and np.allclose(new_positions[0], new_positions[-1], atol=1e-9):
+                new_positions.pop()
+            if len(new_positions) < 3:
+                # La cellule découpée disparaît, on ne la garde pas
+                continue
+
+            new_vert_list = [get_or_create_vertex(pos) for pos in new_positions]
+            cell.vertex_ids = [v.id for v in new_vert_list]
+            cell.vertex_ids = cell.anticlockwise(cell.vertex_ids, self.vertices)
+            for v in new_vert_list:
+                if cid not in v.cell_ids:
+                    v.add_cell_id(cid)
+            new_cells[cid] = cell
+
+        self.cells = new_cells
+
+        # ==========  NETTOYAGE DES CELL_IDS ORPHELINS  ==========
+        # On retire de chaque sommet tout cell_id qui n'existe plus dans self.cells
+        for v in self.vertices.values():
+            v.cell_ids = [cid for cid in v.cell_ids if cid in self.cells]
+
+        # ==========  NETTOYAGE DES SOMMETS INUTILISÉS  ==========
+        used_vids = set()
+        for cell in self.cells.values():
+            used_vids.update(cell.vertex_ids)
+        for vid in list(self.vertices):
+            if vid not in used_vids:
+                del self.vertices[vid]
+
+        # Reconstruction des arêtes
+        self.edges = {}
+        def _add_edge(vs):
+            key = tuple(sorted(vs))
+            for e in self.edges.values():
+                if tuple(sorted(e.vertex_ids)) == key:
+                    return e
+            eid = len(self.edges) + 1
+            edge = Edge(id=eid, vertex_ids=vs)
+            self.edges[eid] = edge
+            return edge
+
+        for cell in self.cells.values():
+            vids = cell.vertex_ids
+            n = len(vids)
+            for i in range(n):
+                edge = _add_edge((vids[i], vids[(i + 1) % n]))
+                if cell.id not in edge.cell_ids:
+                    edge.add_cell_id(cell.id)
+
+        self.update_cell_AP()
+        self.update_edge_length()
+
+        # Suppression des cellules trop petites (avec mise à jour de num_cells)
+        if min_area > 0.0:
+            to_kill = [cid for cid, cell in self.cells.items() if cell.A < min_area]
+            if to_kill:
+                self.kill_cells(to_kill)          # utilise votre méthode éprouvée
+                self.num_cells = len(self.cells)  # synchronisation indispensable
+                self.update_cell_AP()
+                self.update_edge_length()
+
+
+
+
+    @staticmethod
+    def _intersect_segment_circle(A, B, radius):
+        """
+        A, B : np.array positions des extrémités
+        radius : rayon du cercle centré en (0,0)
+        Retourne le(s) point(s) d'intersection du segment [AB] avec le cercle,
+        dans l'ordre des paramètres t croissants (0 ≤ t ≤ 1).
+        """
+        # Vecteur direction
+        d = B - A
+        # Résoudre |A + t*d|^2 = R^2
+        a = np.dot(d, d)
+        b = 2 * np.dot(A, d)
+        c = np.dot(A, A) - radius**2
+        disc = b*b - 4*a*c
+        if disc < 0:
+            return []
+        sqrt_disc = np.sqrt(disc)
+        t1 = (-b - sqrt_disc) / (2*a)
+        t2 = (-b + sqrt_disc) / (2*a)
+        pts = []
+        for t in (t1, t2):
+            if 0 <= t <= 1:
+                pts.append(A + t * d)
+        return pts
+
+
+
+
+    @staticmethod
+    def _point_to_segment_distance(px, py, ax, ay, bx, by):
+        """Distance minimale d'un point P à un segment AB."""
+        abx, aby = bx - ax, by - ay
+        apx, apy = px - ax, py - ay
+        # produit scalaire (AP·AB) / (AB·AB)
+        dot = apx * abx + apy * aby
+        norm2 = abx * abx + aby * aby
+        t = dot / norm2
+        t = max(0.0, min(1.0, t))
+        near_x = ax + t * abx
+        near_y = ay + t * aby
+        return np.hypot(px - near_x, py - near_y)
+
+    @staticmethod
+    def min_distance_to_origin(vertices):
+        """Distance minimale entre l'origine (0,0) et le polygone formé par les vertices."""
+        pts = np.array([v.position for v in vertices])
+        n = len(pts)
+
+        # Test rapide : si l'origine est à l'intérieur du polygone, distance = 0
+        # On utilise le test du nombre d'intersections d'une demi‑droite horizontale.
+        inside = False
+        x, y = 0.0, 0.0
+        for i in range(n):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+            # vérifier si le rayon horizontal depuis (x,y) coupe le segment
+            if ((y1 > y) != (y2 > y)) and (x < (x2 - x1) * (y - y1) / (y2 - y1) + x1):
+                inside = not inside
+        if inside:
+            return 0.0
+
+        # Sinon, distance minimale aux arêtes
+        min_d = float('inf')
+        for i in range(n):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+            d = Mesh._point_to_segment_distance(0.0, 0.0, x1, y1, x2, y2)
+            if d < min_d:
+                min_d = d
+        return min_d
+
+
+    @staticmethod
+    def _regular_shape_factor(n_sides):
+        """Facteur de forme d'un polygone régulier à n_sides côtés."""
+        if n_sides < 3:
+            return 2 * np.sqrt(np.pi)   # cas circulaire
+        return np.sqrt(4 * n_sides * np.tan(np.pi / n_sides))
+
+
+    def _add_edge(self, vertex_ids):
+        """Ajoute une arête (ou la retourne si elle existe déjà)."""
+        sorted_ids = tuple(sorted(vertex_ids))
+        # cherche si une arête avec ces mêmes vertex ids existe déjà
+        for edge in self.edges.values():
+            if tuple(sorted(edge.vertex_ids)) == sorted_ids:
+                return edge
+        # sinon création
+        edge_id = len(self.edges) + 1
+        edge = Edge(id=edge_id, vertex_ids=vertex_ids)
+        self.edges[edge_id] = edge
+        return edge
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

@@ -30,6 +30,7 @@ num_cells = 100          # number of cells
 S = 1                   # target incompatibility value
 L0 = 1                  # target edge length for the hexagons
 T1_thr = 1e-1
+## à la fin de update_vertices_EE
 ### check_T1: pb quand y'a une T1, les keys de mon dictionnaire changent 
 ###### sol 1: break la boucle et rescan tout le dictionnaire
 ####### sol 1.1: il faudrait allonger le edge qui vient d'avoir un T1 pour éviter qui fasse des T1 à l'infini
@@ -43,6 +44,7 @@ T1_thr = 1e-1
 ######## est ce que on pourrait couper en ligne droite quitte à créer de nouvelles cellules? (et tuer celles potentiellement trop petites)
 
 ### apres génération voronoi, si on minimise vc S0=1 et L0=1, le tissu rétrécit
+#### changer les A0 P0 cible ou changer la taille du cercle pointillé (?)
 
 
 ######### la minimisation est vraiment interminable
@@ -55,12 +57,13 @@ mesh = Mesh(num_cells=num_cells, S=S, L0=L0, mode=mode, cut=cut, grad_S=grad_S, 
 mesh.plot(cells=False, edges=True)
 mesh.plot(cells=True, edges=False, cells_id=True)
 mesh.plot(cells=True, edges=True, edges_id=True)
+mesh.plot()
 
-mesh.equilibrium()
+#mesh.equilibrium()
 
-mesh.plot(cells=False, edges=True)
-mesh.plot(cells=True, edges=False, cells_id=True)
-mesh.plot(cells=True, edges=True, edges_id=True)
+#mesh.plot(cells=False, edges=True)
+#mesh.plot(cells=True, edges=False, cells_id=True)
+#mesh.plot(cells=True, edges=True, edges_id=True)
 
 
 """
